@@ -1,0 +1,21 @@
+{
+  "name": "make-babel",
+  "version": "1.0.0",
+  "description": "Make a Babel Starter Node App",
+  "main": "index.js",
+  "repository": "https://github.com/rohitp934/make-babel",
+  "author": "Rohit Prakash",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "chalk": "4.1.2",
+    "commander": "^8.3.0",
+    "cross-spawn": "^7.0.3",
+    "fs-extra": "^10.0.0",
+    "semver": "^7.3.5",
+    "validate-npm-package-name": "^3.0.0"
+  }
+}
