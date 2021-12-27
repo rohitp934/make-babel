@@ -7,7 +7,12 @@ const os = require('os');
 const chalk = require('chalk');
 const semver = require('semver');
 const { ensureDirSync } = require('fs-extra');
-const { isSafeToCreateProjectIn, canNpmReadCWD } = require('./util');
+const {
+	isSafeToCreateProjectIn,
+	canNpmReadCWD,
+	checkNpmVersion,
+	checkYarnVersion,
+} = require('./util');
 const packageJson = require('./package.json');
 
 const isUsingYarn = () => {
@@ -27,6 +32,7 @@ const init = () => {
 		.option('--verbose', 'print additional logs')
 		.option('--info', 'print environment debug info')
 		.option('--template', 'template name')
+		.option('--pnp', 'uses Plug N Play')
 		.on('--help', () => {
 			console.log(
 				`${chalk.red('IMPORTANT: ')}${chalk.bold(
@@ -61,10 +67,16 @@ const init = () => {
 	}
 
 	const isYarn = isUsingYarn();
-	createApp(projectName, program.verbose, program.template, isYarn);
+	createApp(
+		projectName,
+		program.verbose,
+		program.template,
+		isYarn,
+		program.pnp
+	);
 };
 
-const createApp = (name, verbose, template, isYarn) => {
+const createApp = (name, verbose, template, isYarn, pnp) => {
 	const unsupportedNodeVersion = !semver.satisfies(
 		semver.coerce(process.version, '>=12')
 	);
@@ -102,54 +114,42 @@ const createApp = (name, verbose, template, isYarn) => {
 		process.exit(1);
 	}
 
-	run(root, appName, version, verbose, originalDirectory, template, isYarn);
-};
-
-const getTemplateInstallPackage = (template, originalDirectory) => {
-	let templateToInstall = 'cra-template';
-	if (template) {
-		if (template.match(/^file:/)) {
-			templateToInstall = `file:${path.resolve(
-				originalDirectory,
-				template.match(/^file:(.*)?$/)[1]
-			)}`;
-		} else if (
-			template.includes('://') ||
-			template.match(/^.+\.(tgz|tar\.gz)$/)
-		) {
-			// for tar.gz or alternative paths
-			templateToInstall = template;
-		} else {
-			// Add prefix 'cra-template-' to non-prefixed templates, leaving any
-			// @scope/ and @version intact.
-			const packageMatch = template.match(/^(@[^/]+\/)?([^@]+)?(@.+)?$/);
-			const scope = packageMatch[1] || '';
-			const templateName = packageMatch[2] || '';
-			const version = packageMatch[3] || '';
-
-			if (
-				templateName === templateToInstall ||
-				templateName.startsWith(`${templateToInstall}-`)
-			) {
-				// Covers:
-				// - cra-template
-				// - @SCOPE/cra-template
-				// - cra-template-NAME
-				// - @SCOPE/cra-template-NAME
-				templateToInstall = `${scope}${templateName}${version}`;
-			} else if (version && !scope && !templateName) {
-				// Covers using @SCOPE only
-				templateToInstall = `${version}/${templateToInstall}`;
-			} else {
-				// Covers templates without the `cra-template` prefix:
-				// - NAME
-				// - @SCOPE/NAME
-				templateToInstall = `${scope}${templateToInstall}-${templateName}${version}`;
+	if (!useYarn) {
+		const npmInfo = checkNpmVersion();
+		if (!npmInfo.hasMinNpm) {
+			if (npmInfo.npmVersion) {
+				console.log(
+					chalk.yellow(
+						`You are using npm ${npmInfo.npmVersion} so the project will be bootstrapped with an old unsupported version of tools.\n\n` +
+							`Please update to npm 6 or higher for a better, fully supported experience.\n`
+					)
+				);
+			}
+		}
+	} else if (usePnp) {
+		const yarnInfo = checkYarnVersion();
+		if (yarnInfo.yarnVersion) {
+			if (!yarnInfo.hasMinYarnPnp) {
+				console.log(
+					chalk.yellow(
+						`You are using Yarn ${yarnInfo.yarnVersion} together with the --use-pnp flag, but Plug'n'Play is only supported starting from the 1.12 release.\n\n` +
+							`Please update to Yarn 1.12 or higher for a better, fully supported experience.\n`
+					)
+				);
+				// 1.11 had an issue with webpack-dev-middleware, so better not use PnP with it (never reached stable, but still)
+				usePnp = false;
+			}
+			if (!yarnInfo.hasMaxYarnPnp) {
+				console.log(
+					chalk.yellow(
+						'The --use-pnp flag is no longer necessary with yarn 2 and will be deprecated and removed in a future release.\n'
+					)
+				);
+				// 2 supports PnP by default and breaks when trying to use the flag
+				usePnp = false;
 			}
 		}
 	}
 
-	return Promise.resolve(templateToInstall);
+	run(root, appName, version, verbose, originalDirectory, template, isYarn);
 };
-
-console.log(getTemplateInstallPackage('typescript', process.cwd()));

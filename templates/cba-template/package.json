@@ -1,0 +1,24 @@
+{
+	"name": "cba-template",
+	"version": "1.0.0",
+	"keywords": [
+		"node",
+		"make-babel",
+		"template",
+		"javascript"
+	],
+	"description": "The base JavaScript template for Make Babel.",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/rohitp934/make-babel.git",
+		"directory": "templates/cba-template"
+	},
+	"license": "MIT",
+	"engines": {
+		"node": ">=12"
+	},
+	"files": [
+		"template",
+		"template.json"
+	]
+}
