@@ -3,9 +3,9 @@ const validateProjectName = require('validate-npm-package-name');
 const chalk = require('chalk');
 const https = require('https');
 const semver = require('semver');
-const { sync } = require('cross-spawn');
+const { sync, default: spawn } = require('cross-spawn');
 
-export const checkAppName = (appName) => {
+const checkAppName = (appName) => {
 	const validationResult = validateProjectName(appName);
 	if (!validationResult.validForNewPackages) {
 		console.error(
@@ -46,7 +46,7 @@ export const checkAppName = (appName) => {
 	}
 };
 
-export const checkForLatestVersion = () => {
+const checkForLatestVersion = () => {
 	return new Promise((resolve, reject) => {
 		https
 			.get(
@@ -69,7 +69,7 @@ export const checkForLatestVersion = () => {
 	});
 };
 
-export const isSafeToCreateProjectIn = (root, name) => {
+const isSafeToCreateProjectIn = (root, name) => {
 	const validFiles = [
 		'.DS_Store',
 		'.git',
@@ -141,7 +141,7 @@ export const isSafeToCreateProjectIn = (root, name) => {
 	return true;
 };
 
-export const canNpmReadCWD = () => {
+const canNpmReadCWD = () => {
 	const cwd = process.cwd();
 	let childOutput = null;
 	try {
@@ -190,4 +190,73 @@ export const canNpmReadCWD = () => {
 		);
 	}
 	return false;
+};
+
+const install = (root, isYarn, dependencies, verbose, isOnline) => {
+	return new Promise((resolve, reject) => {
+		let command, args;
+		if (isYarn) {
+			command = 'yarnpkg';
+			args = ['add', '--exact'];
+			if (!isOnline) {
+				args.push('--offline');
+			}
+			[].push(args, dependencies);
+			// Explicitly set cwd() to work around issues like
+			// Unfortunately we can only do this for Yarn because npm support for
+			// equivalent --prefix flag doesn't help with this issue.
+			// This is why for npm, we run checkThatNpmCanReadCwd() early instead.
+			args.push('--cwd');
+			args.push(root);
+
+			if (!isOnline) {
+				console.log(chalk.yellow('You appear to be offline.'));
+				console.log(chalk.yellow('Falling back to the local Yarn cache.'));
+				console.log();
+			}
+		} else {
+			command = 'npm';
+			args = [
+				'install',
+				'--no-audit',
+				'--save-exact',
+				'--loglevel',
+				'error',
+			].concat(dependencies);
+		}
+
+		if (verbose) {
+			args.push('--verbose');
+		}
+
+		const child = spawn(command, args, { stdio: 'inherit' });
+		child.on('close', (code) => {
+			if (code !== 0) {
+				reject({
+					command: `${command} ${args.join(' ')}`,
+				});
+				return;
+			}
+			resolve();
+		});
+	});
+};
+
+const run = (
+	root,
+	appName,
+	version,
+	verbose,
+	originalDirectory,
+	template,
+	isYarn
+) => {};
+
+module.exports = {
+	run,
+	install,
+	checkAppName,
+	canNpmReadCWD,
+	checkForLatestVersion,
+	isSafeToCreateProjectIn,
 };
