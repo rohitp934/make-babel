@@ -1,6 +1,6 @@
 {
 	"name": "@hackermans/cba-template",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"keywords": [
 		"node",
 		"make-babel",
@@ -20,5 +20,11 @@
 	"files": [
 		"template",
 		"template.json"
-	]
+	],
+	"scripts": {
+		"build-server": "babel src -d dist/",
+		"build": "npm run clean && npm run build-server",
+		"dev": "babel-node --presets='@babel/preset-env' -- src/index.js",
+		"start": "node dist/index.js"
+	}
 }

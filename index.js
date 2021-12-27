@@ -100,7 +100,7 @@ const createApp = (name, verbose, template, isYarn, pnp) => {
 
 	const packageJson = {
 		name: appName,
-		version: '0.0.1',
+		version: '1.0.0',
 		private: true,
 	};
 	fs.writeFileSync(

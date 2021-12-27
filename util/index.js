@@ -4,6 +4,17 @@ const chalk = require('chalk');
 const https = require('https');
 const semver = require('semver');
 const { sync, default: spawn } = require('cross-spawn');
+const {
+	existsSync,
+	readdirSync,
+	removeSync,
+	lstatSync,
+	renameSync,
+	copySync,
+	writeFileSync,
+	readFileSync,
+} = require('fs-extra');
+const path = require('path');
 
 const checkAppName = (appName) => {
 	const validationResult = validateProjectName(appName);
@@ -25,12 +36,7 @@ const checkAppName = (appName) => {
 		process.exit(1);
 	}
 
-	const dependencies = [
-		'@babel/core',
-		'@babel/node',
-		'@babel/preset-env',
-		'@babel/cli',
-	].sort();
+	const dependencies = ['@babel/core', '@babel/preset-env'].sort();
 	if (dependencies.includes(appName)) {
 		console.error(
 			chalk.red(
@@ -114,7 +120,7 @@ const isSafeToCreateProjectIn = (root, name) => {
 		console.log();
 		for (const file of conflicts) {
 			try {
-				const stats = fs.lstatSync(path.join(root, file));
+				const stats = lstatSync(path.join(root, file));
 				if (stats.isDirectory()) {
 					console.log(`  ${chalk.blue(`${file}/`)}`);
 				} else {
@@ -133,9 +139,9 @@ const isSafeToCreateProjectIn = (root, name) => {
 	}
 
 	// Remove any log files from a previous installation.
-	fs.readdirSync(root).forEach((file) => {
+	readdirSync(root).forEach((file) => {
 		if (isErrorLog(file)) {
-			fs.removeSync(path.join(root, file));
+			removeSync(path.join(root, file));
 		}
 	});
 	return true;
@@ -256,152 +262,318 @@ const install = (root, isYarn, pnp, dependencies, verbose, isOnline) => {
 const run = (
 	root,
 	appName,
-	version,
 	verbose,
 	originalDirectory,
 	template,
 	isYarn,
 	pnp
 ) => {
-	Promise.all([
-		getInstallPackage(version, originalDirectory),
-		getTemplateInstallPackage(template, originalDirectory),
-	]).then(([packageToInstall, templateToInstall]) => {
-		const allDependencies = ['react', 'react-dom', packageToInstall];
+	Promise.all([getTemplateInstallPackage(template, originalDirectory)]).then(
+		([templateToInstall]) => {
+			const allDependencies = ['@babel/core', '@babel/preset-env'];
 
-		console.log('Installing packages. This might take a couple of minutes.');
+			console.log('Installing packages. This might take a couple of minutes.');
 
-		Promise.all([
-			getPackageInfo(packageToInstall),
-			getPackageInfo(templateToInstall),
-		])
-			.then(([packageInfo, templateInfo]) =>
-				checkIfOnline(useYarn).then((isOnline) => ({
-					isOnline,
-					packageInfo,
-					templateInfo,
-				}))
-			)
-			.then(({ isOnline, packageInfo, templateInfo }) => {
-				let packageVersion = semver.coerce(packageInfo.version);
-
-				const templatesVersionMinimum = '3.3.0';
-
-				// Assume compatibility if we can't test the version.
-				if (!semver.valid(packageVersion)) {
-					packageVersion = templatesVersionMinimum;
-				}
-
-				// Only support templates when used alongside new react-scripts versions.
-				const supportsTemplates = semver.gte(
-					packageVersion,
-					templatesVersionMinimum
-				);
-				if (supportsTemplates) {
+			Promise.all([getPackageInfo(templateToInstall)])
+				.then(([templateInfo]) =>
+					checkIfOnline(isYarn).then((isOnline) => ({
+						isOnline,
+						templateInfo,
+					}))
+				)
+				.then(({ isOnline, templateInfo }) => {
 					allDependencies.push(templateToInstall);
-				} else if (template) {
-					console.log('');
+
 					console.log(
-						`The ${chalk.cyan(packageInfo.name)} version you're using ${
-							packageInfo.name === 'react-scripts' ? 'is not' : 'may not be'
-						} compatible with the ${chalk.cyan('--template')} option.`
+						`Installing ${chalk.cyan('@babel/core')}, ${chalk.cyan(
+							'@babel/preset-env'
+						)}, with ${chalk.cyan(templateInfo.name)}`
 					);
-					console.log('');
-				}
+					console.log();
 
-				console.log(
-					`Installing ${chalk.cyan('react')}, ${chalk.cyan(
-						'react-dom'
-					)}, and ${chalk.cyan(packageInfo.name)}${
-						supportsTemplates ? ` with ${chalk.cyan(templateInfo.name)}` : ''
-					}...`
-				);
-				console.log();
+					return install(
+						root,
+						isYarn,
+						pnp,
+						allDependencies,
+						verbose,
+						isOnline
+					).then(() => templateInfo);
+				})
+				.then(async ({ templateInfo }) => {
+					const templateName = templateInfo.name;
+					checkNodeVersion();
 
-				return install(
-					root,
-					useYarn,
-					usePnp,
-					allDependencies,
-					verbose,
-					isOnline
-				).then(() => ({
-					packageInfo,
-					supportsTemplates,
-					templateInfo,
-				}));
-			})
-			.then(async ({ packageInfo, supportsTemplates, templateInfo }) => {
-				const packageName = packageInfo.name;
-				const templateName = supportsTemplates ? templateInfo.name : undefined;
-				checkNodeVersion(packageName);
-				setCaretRangeForRuntimeDeps(packageName);
+					const pnpPath = path.resolve(process.cwd(), '.pnp.js');
 
-				const pnpPath = path.resolve(process.cwd(), '.pnp.js');
+					const nodeArgs = existsSync(pnpPath) ? ['--require', pnpPath] : [];
 
-				const nodeArgs = fs.existsSync(pnpPath) ? ['--require', pnpPath] : [];
-
-				await executeNodeScript(
-					{
-						cwd: process.cwd(),
-						args: nodeArgs,
-					},
-					[root, appName, verbose, originalDirectory, templateName],
-					`
-			const init = require('${packageName}/scripts/init.js');
-			init.apply(null, JSON.parse(process.argv[1]));
-		  `
-				);
-
-				if (version === 'react-scripts@0.9.x') {
-					console.log(
-						chalk.yellow(
-							`\nNote: the project was bootstrapped with an old unsupported version of tools.\n` +
-								`Please update to Node >=14 and npm >=6 to get supported tools in new projects.\n`
-						)
+					await initializeTemplate(
+						root,
+						appName,
+						verbose,
+						originalDirectory,
+						templateName
 					);
-				}
-			})
-			.catch((reason) => {
-				console.log();
-				console.log('Aborting installation.');
-				if (reason.command) {
-					console.log(`  ${chalk.cyan(reason.command)} has failed.`);
-				} else {
-					console.log(
-						chalk.red('Unexpected error. Please report it as a bug:')
-					);
-					console.log(reason);
-				}
-				console.log();
+				})
+				.catch((reason) => {
+					console.log();
+					console.log('Aborting installation.');
+					if (reason.command) {
+						console.log(`  ${chalk.cyan(reason.command)} has failed.`);
+					} else {
+						console.log(
+							chalk.red('Unexpected error. Please report it as a bug:')
+						);
+						console.log(reason);
+					}
+					console.log();
 
-				// On 'exit' we will delete these files from target directory.
-				const knownGeneratedFiles = ['package.json', 'node_modules'];
-				const currentFiles = fs.readdirSync(path.join(root));
-				currentFiles.forEach((file) => {
-					knownGeneratedFiles.forEach((fileToMatch) => {
-						// This removes all knownGeneratedFiles.
-						if (file === fileToMatch) {
-							console.log(`Deleting generated file... ${chalk.cyan(file)}`);
-							fs.removeSync(path.join(root, file));
-						}
+					// On 'exit' we will delete these files from target directory.
+					const knownGeneratedFiles = ['package.json', 'node_modules'];
+					const currentFiles = readdirSync(path.join(root));
+					currentFiles.forEach((file) => {
+						knownGeneratedFiles.forEach((fileToMatch) => {
+							// This removes all knownGeneratedFiles.
+							if (file === fileToMatch) {
+								console.log(`Deleting generated file... ${chalk.cyan(file)}`);
+								removeSync(path.join(root, file));
+							}
+						});
 					});
+					const remainingFiles = readdirSync(path.join(root));
+					if (!remainingFiles.length) {
+						// Delete target folder if empty
+						console.log(
+							`Deleting ${chalk.cyan(`${appName}/`)} from ${chalk.cyan(
+								path.resolve(root, '..')
+							)}`
+						);
+						process.chdir(path.resolve(root, '..'));
+						removeSync(path.join(root));
+					}
+					console.log('Done.');
+					process.exit(1);
 				});
-				const remainingFiles = fs.readdirSync(path.join(root));
-				if (!remainingFiles.length) {
-					// Delete target folder if empty
-					console.log(
-						`Deleting ${chalk.cyan(`${appName}/`)} from ${chalk.cyan(
-							path.resolve(root, '..')
-						)}`
-					);
-					process.chdir(path.resolve(root, '..'));
-					fs.removeSync(path.join(root));
-				}
-				console.log('Done.');
-				process.exit(1);
-			});
+		}
+	);
+};
+
+const initializeTemplate = (
+	appPath,
+	appName,
+	verbose,
+	originalDirectory,
+	templateName,
+	isYarn
+) => {
+	const appPackage = require(path.join(appPath, 'package.json'));
+	if (!templateName) {
+		console.log();
+		console.error(`${chalk.red('A template was not provided.')}`);
+		console.error(
+			`Please note that global installs of ${chalk.cyan(
+				'make-babel'
+			)} are not supported.`
+		);
+		console.error(
+			`You can fix this by running ${chalk.cyan(
+				'npm uninstall -g @hackermans/make-babel'
+			)} or ${chalk.cyan(
+				'yarn global remove @hackermans/make-babel'
+			)} and using ${chalk.cyan('npx @hackermans/make-babel')} instead.`
+		);
+		return;
+	}
+
+	const templatePath = path.dirname(
+		require.resolve(`${templateName}/package.json`, { paths: [appPath] })
+	);
+
+	const templateJsonPath = path.join(templatePath, 'template.json');
+	let templateJson = {};
+	if (existsSync(templateJsonPath)) {
+		templateJson = require(templateJsonPath);
+	}
+	const templatePackage = templateJson.package || {};
+
+	// Keys to ignore in templatePackage
+	const templatePackageBlacklist = [
+		'name',
+		'version',
+		'description',
+		'keywords',
+		'bugs',
+		'license',
+		'author',
+		'contributors',
+		'files',
+		'browser',
+		'bin',
+		'man',
+		'directories',
+		'repository',
+		'peerDependencies',
+		'bundledDependencies',
+		'optionalDependencies',
+		'engineStrict',
+		'os',
+		'cpu',
+		'preferGlobal',
+		'private',
+		'publishConfig',
+	];
+
+	// Keys from templatePackage that will be merged with appPackage
+	const templatePackageToMerge = ['dependencies', 'scripts'];
+
+	// Keys from templatePackage that will be added to appPackage,
+	// replacing any existing entries.
+	const templatePackageToReplace = Object.keys(templatePackage).filter(
+		(key) => {
+			return (
+				!templatePackageBlacklist.includes(key) &&
+				!templatePackageToMerge.includes(key)
+			);
+		}
+	);
+
+	// Copy over some of the devDependencies
+	appPackage.dependencies = appPackage.dependencies || {};
+
+	// Setup the script rules
+	const templateScripts = templatePackage.scripts || {};
+	appPackage.scripts = Object.assign({}, templateScripts);
+
+	// Update scripts for Yarn users
+	if (isYarn) {
+		appPackage.scripts = Object.entries(appPackage.scripts).reduce(
+			(acc, [key, value]) => ({
+				...acc,
+				[key]: value.replace(/(npm run |npm )/, 'yarn '),
+			}),
+			{}
+		);
+	}
+	// Add templatePackage keys/values to appPackage, replacing existing entries
+	templatePackageToReplace.forEach((key) => {
+		appPackage[key] = templatePackage[key];
 	});
+
+	writeFileSync(
+		path.join(appPath, 'package.json'),
+		JSON.stringify(appPackage, null, 2) + os.EOL
+	);
+
+	const readmeExists = existsSync(path.join(appPath, 'README.md'));
+	if (readmeExists) {
+		renameSync(
+			path.join(appPath, 'README.md'),
+			path.join(appPath, 'README.old.md')
+		);
+	}
+
+	// Copy the files for the user
+	const templateDir = path.join(templatePath, 'template');
+	if (existsSync(templateDir)) {
+		copySync(templateDir, appPath);
+	} else {
+		console.error(
+			`Could not locate supplied template: ${chalk.green(templateDir)}`
+		);
+		return;
+	}
+
+	// modifies README.md commands based on user used package manager.
+	if (isYarn) {
+		try {
+			const readme = readFileSync(path.join(appPath, 'README.md'), 'utf8');
+			writeFileSync(
+				path.join(appPath, 'README.md'),
+				readme.replace(/(npm run |npm )/g, 'yarn '),
+				'utf8'
+			);
+		} catch (err) {
+			// Silencing the error. As it fall backs to using default npm commands.
+		}
+	}
+};
+
+const getTemplateInstallPackage = (template, originalDirectory) => {
+	let templateToInstall = 'cra-template';
+	if (template) {
+		if (template.match(/^file:/)) {
+			templateToInstall = `file:${path.resolve(
+				originalDirectory,
+				template.match(/^file:(.*)?$/)[1]
+			)}`;
+		} else if (
+			template.includes('://') ||
+			template.match(/^.+\.(tgz|tar\.gz)$/)
+		) {
+			// for tar.gz or alternative paths
+			templateToInstall = template;
+		} else {
+			// Add prefix 'cra-template-' to non-prefixed templates, leaving any
+			// @scope/ and @version intact.
+			const packageMatch = template.match(/^(@[^/]+\/)?([^@]+)?(@.+)?$/);
+			const scope = packageMatch[1] || '';
+			const templateName = packageMatch[2] || '';
+			const version = packageMatch[3] || '';
+
+			if (
+				templateName === templateToInstall ||
+				templateName.startsWith(`${templateToInstall}-`)
+			) {
+				// Covers:
+				// - cba-template
+				// - @SCOPE/cba-template
+				// - cba-template-NAME
+				// - @SCOPE/cba-template-NAME
+				templateToInstall = `${scope}${templateName}${version}`;
+			} else if (version && !scope && !templateName) {
+				// Covers using @SCOPE only
+				templateToInstall = `${version}/${templateToInstall}`;
+			} else {
+				// Covers templates without the `cra-template` prefix:
+				// - NAME
+				// - @SCOPE/NAME
+				templateToInstall = `${scope}${templateToInstall}-${templateName}${version}`;
+			}
+		}
+	}
+
+	return Promise.resolve(templateToInstall);
+};
+
+const checkNodeVersion = () => {
+	const packageJsonPath = path.resolve(
+		process.cwd(),
+		'node_modules',
+		'package.json'
+	);
+
+	if (!fs.existsSync(packageJsonPath)) {
+		return;
+	}
+
+	const packageJson = require(packageJsonPath);
+	if (!packageJson.engines || !packageJson.engines.node) {
+		return;
+	}
+
+	if (!semver.satisfies(process.version, packageJson.engines.node)) {
+		console.error(
+			chalk.red(
+				'You are running Node %s.\n' +
+					'Make Babel requires Node %s or higher. \n' +
+					'Please update your version of Node.'
+			),
+			process.version,
+			packageJson.engines.node
+		);
+		process.exit(1);
+	}
 };
 
 const checkNpmVersion = () => {
@@ -460,4 +632,5 @@ module.exports = {
 	isSafeToCreateProjectIn,
 	checkNpmVersion,
 	checkYarnVersion,
+	getTemplateInstallPackage,
 };
