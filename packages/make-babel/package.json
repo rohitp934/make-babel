@@ -1,6 +1,6 @@
 {
 	"name": "@hackermans/make-babel",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Make a Babel Starter Node App",
 	"main": "index.js",
 	"repository": "https://github.com/rohitp934/make-babel",
