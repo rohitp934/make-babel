@@ -1,4 +1,5 @@
-'use strict';
+#!/usr/bin/env node
+
 const commander = require('commander');
 const fs = require('fs');
 const path = require('path');
@@ -8,6 +9,8 @@ const chalk = require('chalk');
 const semver = require('semver');
 const { ensureDirSync } = require('fs-extra');
 const {
+	run,
+	checkAppName,
 	isSafeToCreateProjectIn,
 	canNpmReadCWD,
 	checkNpmVersion,
@@ -15,28 +18,24 @@ const {
 } = require('./util');
 const packageJson = require('./package.json');
 
-const isUsingYarn = () => {
-	return (process.env.npm_config_user_agent || '').indexOf('yarn') === 0;
-};
-
 let projectName;
 
 const init = () => {
 	const program = new commander.Command(packageJson.name)
 		.version(packageJson.version)
+		.option('--verbose', 'print additional logs')
+		.option('--info', 'print environment debug info')
+		.option('--template', 'template name')
+		.option('--yarn', 'use yarn instead of npm', false)
 		.arguments('<project-directory>')
 		.usage(`${chalk.green('<project-directory>')} [options]`)
 		.action((name) => {
 			projectName = name;
 		})
-		.option('--verbose', 'print additional logs')
-		.option('--info', 'print environment debug info')
-		.option('--template', 'template name')
-		.option('--pnp', 'uses Plug N Play')
 		.on('--help', () => {
 			console.log(
 				`${chalk.red('IMPORTANT: ')}${chalk.bold(
-					'Supports PnP, use --pnp to enable it'
+					'Does not support PnP, it is too messy with yarn v2, might add in the future'
 				)}`
 			);
 			console.log(
@@ -65,20 +64,14 @@ const init = () => {
 		);
 		process.exit(1);
 	}
-
-	const isYarn = isUsingYarn();
-	createApp(
-		projectName,
-		program.verbose,
-		program.template,
-		isYarn,
-		program.pnp
-	);
+	const options = program.opts();
+	createApp(projectName, options.verbose, options.template, options.yarn);
 };
 
-const createApp = (name, verbose, template, isYarn, pnp) => {
+const createApp = (name, verbose, template, isYarn) => {
 	const unsupportedNodeVersion = !semver.satisfies(
-		semver.coerce(process.version, '>=12')
+		semver.coerce(process.version),
+		'>=12'
 	);
 
 	if (unsupportedNodeVersion) {
@@ -96,6 +89,7 @@ const createApp = (name, verbose, template, isYarn, pnp) => {
 	if (!isSafeToCreateProjectIn(root, appName)) {
 		process.exit(1);
 	}
+	console.log(`Using ${chalk.green(isYarn ? 'Yarn' : 'NPM')}`);
 	console.log(`\nCreating a new Babel App in ${chalk.green(root)}.\n`);
 
 	const packageJson = {
@@ -114,7 +108,7 @@ const createApp = (name, verbose, template, isYarn, pnp) => {
 		process.exit(1);
 	}
 
-	if (!useYarn) {
+	if (!isYarn) {
 		const npmInfo = checkNpmVersion();
 		if (!npmInfo.hasMinNpm) {
 			if (npmInfo.npmVersion) {
@@ -126,30 +120,9 @@ const createApp = (name, verbose, template, isYarn, pnp) => {
 				);
 			}
 		}
-	} else if (usePnp) {
-		const yarnInfo = checkYarnVersion();
-		if (yarnInfo.yarnVersion) {
-			if (!yarnInfo.hasMinYarnPnp) {
-				console.log(
-					chalk.yellow(
-						`You are using Yarn ${yarnInfo.yarnVersion} together with the --use-pnp flag, but Plug'n'Play is only supported starting from the 1.12 release.\n\n` +
-							`Please update to Yarn 1.12 or higher for a better, fully supported experience.\n`
-					)
-				);
-				// 1.11 had an issue with webpack-dev-middleware, so better not use PnP with it (never reached stable, but still)
-				usePnp = false;
-			}
-			if (!yarnInfo.hasMaxYarnPnp) {
-				console.log(
-					chalk.yellow(
-						'The --use-pnp flag is no longer necessary with yarn 2 and will be deprecated and removed in a future release.\n'
-					)
-				);
-				// 2 supports PnP by default and breaks when trying to use the flag
-				usePnp = false;
-			}
-		}
 	}
 
-	run(root, appName, version, verbose, originalDirectory, template, isYarn);
+	run(root, appName, verbose, originalDirectory, template, isYarn);
 };
+
+init();

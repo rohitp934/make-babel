@@ -3,18 +3,11 @@ const validateProjectName = require('validate-npm-package-name');
 const chalk = require('chalk');
 const https = require('https');
 const semver = require('semver');
-const { sync, default: spawn } = require('cross-spawn');
-const {
-	existsSync,
-	readdirSync,
-	removeSync,
-	lstatSync,
-	renameSync,
-	copySync,
-	writeFileSync,
-	readFileSync,
-} = require('fs-extra');
+const { sync } = require('cross-spawn');
+const fs = require('fs-extra');
+const os = require('os');
 const path = require('path');
+const dns = require('dns');
 
 const checkAppName = (appName) => {
 	const validationResult = validateProjectName(appName);
@@ -120,7 +113,7 @@ const isSafeToCreateProjectIn = (root, name) => {
 		console.log();
 		for (const file of conflicts) {
 			try {
-				const stats = lstatSync(path.join(root, file));
+				const stats = fs.lstatSync(path.join(root, file));
 				if (stats.isDirectory()) {
 					console.log(`  ${chalk.blue(`${file}/`)}`);
 				} else {
@@ -139,9 +132,9 @@ const isSafeToCreateProjectIn = (root, name) => {
 	}
 
 	// Remove any log files from a previous installation.
-	readdirSync(root).forEach((file) => {
+	fs.readdirSync(root).forEach((file) => {
 		if (isErrorLog(file)) {
-			removeSync(path.join(root, file));
+			fs.removeSync(path.join(root, file));
 		}
 	});
 	return true;
@@ -198,7 +191,7 @@ const canNpmReadCWD = () => {
 	return false;
 };
 
-const install = (root, isYarn, pnp, dependencies, verbose, isOnline) => {
+const install = (root, isYarn, dependencies, verbose, isOnline) => {
 	return new Promise((resolve, reject) => {
 		let command, args;
 		if (isYarn) {
@@ -207,10 +200,7 @@ const install = (root, isYarn, pnp, dependencies, verbose, isOnline) => {
 			if (!isOnline) {
 				args.push('--offline');
 			}
-			if (pnp) {
-				args.push('--enable-pnp');
-			}
-			[].push(args, dependencies);
+			[].push.apply(args, dependencies);
 			// Explicitly set cwd() to work around issues like
 			// Unfortunately we can only do this for Yarn because npm support for
 			// equivalent --prefix flag doesn't help with this issue.
@@ -232,49 +222,38 @@ const install = (root, isYarn, pnp, dependencies, verbose, isOnline) => {
 				'--loglevel',
 				'error',
 			].concat(dependencies);
-
-			if (pnp) {
-				console.log(
-					`${chalk.yellow('NPM does not support PnP.')}\n ${chalk.green(
-						'Falling back to regular install.'
-					)}\n`
-				);
-			}
 		}
 
 		if (verbose) {
 			args.push('--verbose');
 		}
 
-		const child = spawn(command, args, { stdio: 'inherit' });
-		child.on('close', (code) => {
-			if (code !== 0) {
-				reject({
-					command: `${command} ${args.join(' ')}`,
-				});
-				return;
-			}
-			resolve();
-		});
+		const child = sync(command, args, { stdio: 'inherit' });
+		if (child.status !== 0) {
+			reject({ command: `${command} ${args.join(' ')}` });
+			return;
+		}
+		resolve();
+		// child.on('close', (code) => {
+		// 	if (code !== 0) {
+		// 		reject({
+		// 			command: `${command} ${args.join(' ')}`,
+		// 		});
+		// 		return;
+		// 	}
+		// 	resolve();
+		// });
 	});
 };
 
-const run = (
-	root,
-	appName,
-	verbose,
-	originalDirectory,
-	template,
-	isYarn,
-	pnp
-) => {
+const run = (root, appName, verbose, originalDirectory, template, isYarn) => {
 	Promise.all([getTemplateInstallPackage(template, originalDirectory)]).then(
 		([templateToInstall]) => {
 			const allDependencies = ['@babel/core', '@babel/preset-env'];
 
 			console.log('Installing packages. This might take a couple of minutes.');
 
-			Promise.all([getPackageInfo(templateToInstall)])
+			Promise.all([templateToInstall])
 				.then(([templateInfo]) =>
 					checkIfOnline(isYarn).then((isOnline) => ({
 						isOnline,
@@ -287,33 +266,25 @@ const run = (
 					console.log(
 						`Installing ${chalk.cyan('@babel/core')}, ${chalk.cyan(
 							'@babel/preset-env'
-						)}, with ${chalk.cyan(templateInfo.name)}`
+						)}, with ${chalk.cyan(templateInfo)}`
 					);
 					console.log();
 
-					return install(
-						root,
-						isYarn,
-						pnp,
-						allDependencies,
-						verbose,
-						isOnline
-					).then(() => templateInfo);
+					return install(root, isYarn, allDependencies, verbose, isOnline).then(
+						() => templateInfo
+					);
 				})
-				.then(async ({ templateInfo }) => {
-					const templateName = templateInfo.name;
+				.then(async (templateInfo) => {
+					const templateName = templateInfo;
 					checkNodeVersion();
-
-					const pnpPath = path.resolve(process.cwd(), '.pnp.js');
-
-					const nodeArgs = existsSync(pnpPath) ? ['--require', pnpPath] : [];
 
 					await initializeTemplate(
 						root,
 						appName,
 						verbose,
 						originalDirectory,
-						templateName
+						templateName,
+						isYarn
 					);
 				})
 				.catch((reason) => {
@@ -331,17 +302,17 @@ const run = (
 
 					// On 'exit' we will delete these files from target directory.
 					const knownGeneratedFiles = ['package.json', 'node_modules'];
-					const currentFiles = readdirSync(path.join(root));
+					const currentFiles = fs.readdirSync(path.join(root));
 					currentFiles.forEach((file) => {
 						knownGeneratedFiles.forEach((fileToMatch) => {
 							// This removes all knownGeneratedFiles.
 							if (file === fileToMatch) {
 								console.log(`Deleting generated file... ${chalk.cyan(file)}`);
-								removeSync(path.join(root, file));
+								fs.removeSync(path.join(root, file));
 							}
 						});
 					});
-					const remainingFiles = readdirSync(path.join(root));
+					const remainingFiles = fs.readdirSync(path.join(root));
 					if (!remainingFiles.length) {
 						// Delete target folder if empty
 						console.log(
@@ -350,7 +321,7 @@ const run = (
 							)}`
 						);
 						process.chdir(path.resolve(root, '..'));
-						removeSync(path.join(root));
+						fs.removeSync(path.join(root));
 					}
 					console.log('Done.');
 					process.exit(1);
@@ -392,7 +363,7 @@ const initializeTemplate = (
 
 	const templateJsonPath = path.join(templatePath, 'template.json');
 	let templateJson = {};
-	if (existsSync(templateJsonPath)) {
+	if (fs.existsSync(templateJsonPath)) {
 		templateJson = require(templateJsonPath);
 	}
 	const templatePackage = templateJson.package || {};
@@ -460,14 +431,14 @@ const initializeTemplate = (
 		appPackage[key] = templatePackage[key];
 	});
 
-	writeFileSync(
+	fs.writeFileSync(
 		path.join(appPath, 'package.json'),
 		JSON.stringify(appPackage, null, 2) + os.EOL
 	);
 
-	const readmeExists = existsSync(path.join(appPath, 'README.md'));
+	const readmeExists = fs.existsSync(path.join(appPath, 'README.md'));
 	if (readmeExists) {
-		renameSync(
+		fs.renameSync(
 			path.join(appPath, 'README.md'),
 			path.join(appPath, 'README.old.md')
 		);
@@ -475,8 +446,8 @@ const initializeTemplate = (
 
 	// Copy the files for the user
 	const templateDir = path.join(templatePath, 'template');
-	if (existsSync(templateDir)) {
-		copySync(templateDir, appPath);
+	if (fs.existsSync(templateDir)) {
+		fs.copySync(templateDir, appPath);
 	} else {
 		console.error(
 			`Could not locate supplied template: ${chalk.green(templateDir)}`
@@ -487,8 +458,8 @@ const initializeTemplate = (
 	// modifies README.md commands based on user used package manager.
 	if (isYarn) {
 		try {
-			const readme = readFileSync(path.join(appPath, 'README.md'), 'utf8');
-			writeFileSync(
+			const readme = fs.readFileSync(path.join(appPath, 'README.md'), 'utf8');
+			fs.writeFileSync(
 				path.join(appPath, 'README.md'),
 				readme.replace(/(npm run |npm )/g, 'yarn '),
 				'utf8'
@@ -497,10 +468,91 @@ const initializeTemplate = (
 			// Silencing the error. As it fall backs to using default npm commands.
 		}
 	}
+
+	let command, remove, args;
+
+	if (isYarn) {
+		command = 'yarnpkg';
+		remove = 'remove';
+		args = ['add'];
+	} else {
+		command = 'npm';
+		remove = 'uninstall';
+		args = ['install', '--no-audit', '--save', verbose && '--verbose'].filter(
+			(e) => e
+		);
+	}
+
+	// Install additional template dependencies, if present
+	const dependenciesToInstall = Object.entries({
+		...templatePackage.dependencies,
+		...templatePackage.devDependencies,
+	});
+	if (dependenciesToInstall.length) {
+		args = args.concat(
+			dependenciesToInstall.map(([name, version]) => `${name}@${version}`)
+		);
+	}
+
+	// Install babel-core and babel-preset-env.
+	if (!isBabelInstalled(appPackage)) {
+		args = args.concat(['@babel/core', '@babel/preset-env']);
+	}
+
+	// Installing required dependencies
+	if ((!isBabelInstalled(appPackage) || templateName) && args.length > 1) {
+		console.log();
+		console.log(`Installing template dependencies using ${command}...`);
+		console.log();
+
+		const proc = sync(command, args, { stdio: 'inherit' });
+		if (proc.status !== 0) {
+			console.error(`\`${command} ${args.join(' ')}\` failed`);
+			return;
+		}
+	}
+
+	// Remove template
+	console.log(`Removing template package using ${command}...`);
+
+	const proc = sync(command, [remove, templateName], {
+		stdio: 'inherit',
+	});
+	if (proc.status !== 0) {
+		console.error(`\`${command} ${remove} ${templateName}\` failed`);
+		return;
+	}
+
+	let cdpath;
+	if (originalDirectory && path.join(originalDirectory, appName) === appPath) {
+		cdpath = appName;
+	} else {
+		cdpath = appPath;
+	}
+
+	const displayedCommand = isYarn ? 'yarn' : 'npm';
+	console.log();
+	console.log(`Success! Created ${appName} at ${appPath}`);
+	console.log('Inside that directory, you can run several commands:');
+	console.log();
+	console.log(chalk.cyan(`  ${displayedCommand} start`));
+	console.log('    Starts the development server.');
+	console.log();
+	console.log('Happy hacking!');
+};
+
+// Add verify Typescript method in the future
+
+const isBabelInstalled = (appPackage) => {
+	const dependencies = appPackage.dependencies || {};
+	return (
+		typeof dependencies['@babel/core'] !== 'undefined' &&
+		dependencies['@babel/preset-env'] !== 'undefined'
+	);
 };
 
 const getTemplateInstallPackage = (template, originalDirectory) => {
-	let templateToInstall = 'cra-template';
+	let templateToInstall = '@hackermans/cba-template';
 	if (template) {
 		if (template.match(/^file:/)) {
 			templateToInstall = `file:${path.resolve(
@@ -535,7 +587,7 @@ const getTemplateInstallPackage = (template, originalDirectory) => {
 				// Covers using @SCOPE only
 				templateToInstall = `${version}/${templateToInstall}`;
 			} else {
-				// Covers templates without the `cra-template` prefix:
+				// Covers templates without the `cba-template` prefix:
 				// - NAME
 				// - @SCOPE/NAME
 				templateToInstall = `${scope}${templateToInstall}-${templateName}${version}`;
@@ -580,7 +632,7 @@ const checkNpmVersion = () => {
 	let hasMinNpm = false;
 	let npmVersion = null;
 	try {
-		npmVersion = execSync('npm --version').toString().trim();
+		npmVersion = fs.execSync('npm --version').toString().trim();
 		hasMinNpm = semver.gte(npmVersion, '6.0.0');
 	} catch (err) {
 		// ignore
@@ -591,6 +643,29 @@ const checkNpmVersion = () => {
 	};
 };
 
+const checkIfOnline = (useYarn) => {
+	if (!useYarn) {
+		// Don't ping the Yarn registry.
+		// We'll just assume the best case.
+		return Promise.resolve(true);
+	}
+
+	return new Promise((resolve) => {
+		dns.lookup('registry.yarnpkg.com', (err) => {
+			let proxy;
+			if (err != null && (proxy = getProxy())) {
+				// If a proxy is defined, we likely can't resolve external hostnames.
+				// Try to resolve the proxy name as an indication of a connection.
+				dns.lookup(url.parse(proxy).hostname, (proxyErr) => {
+					resolve(proxyErr == null);
+				});
+			} else {
+				resolve(err == null);
+			}
+		});
+	});
+};
+
 const checkYarnVersion = () => {
 	const minYarnPnp = '1.12.0';
 	const maxYarnPnp = '2.0.0';
@@ -598,7 +673,7 @@ const checkYarnVersion = () => {
 	let hasMaxYarnPnp = false;
 	let yarnVersion = null;
 	try {
-		yarnVersion = execSync('yarnpkg --version').toString().trim();
+		yarnVersion = fs.execSync('yarnpkg --version').toString().trim();
 		if (semver.valid(yarnVersion)) {
 			hasMinYarnPnp = semver.gte(yarnVersion, minYarnPnp);
 			hasMaxYarnPnp = semver.lt(yarnVersion, maxYarnPnp);
